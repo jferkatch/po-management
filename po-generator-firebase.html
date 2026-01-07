@@ -1,0 +1,1503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Devco Purchase Order Generator</title>
+  
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: 'IBM Plex Sans', sans-serif;
+    }
+    body {
+      background: linear-gradient(to bottom right, #f8fafc, #dbeafe, #f1f5f9);
+      min-height: 100vh;
+    }
+    h1, h2, h3 { font-family: 'Playfair Display', serif; }
+    input:focus, textarea:focus, select:focus { outline: none; }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    .animate-slide-in { animation: slideIn 0.4s ease-out forwards; }
+    .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // ============================================
+    // FIREBASE CONFIGURATION
+    // ============================================
+    // IMPORTANT: Replace these values with your Firebase project config
+    // See setup instructions below
+    const firebaseConfig = {
+      apiKey: "AIzaSyAFuf58GfDN5AACrdz95I5pwzdE3KJqWh4",
+      authDomain: "po-management-5857d.firebaseapp.com",
+      projectId: "po-management-5857d",
+      storageBucket: "po-management-5857d.firebasestorage.app",
+      messagingSenderId: "585189545720",
+      appId: "1:585189545720:web:30716ba624d8bae866cd0d"
+    };
+
+    // Initialize Firebase
+    let db = null;
+    let isFirebaseConfigured = false;
+    
+    try {
+      if (firebaseConfig.apiKey !== "YOUR_API_KEY") {
+        firebase.initializeApp(firebaseConfig);
+        db = firebase.firestore();
+        isFirebaseConfigured = true;
+      }
+    } catch (error) {
+      console.error("Firebase initialization error:", error);
+    }
+
+    // Storage wrapper for Firebase Firestore
+    const storage = {
+      get: async (key) => {
+        try {
+          if (!db) return null;
+          const doc = await db.collection('poData').doc(key).get();
+          if (doc.exists) {
+            return { key, value: doc.data().value };
+          }
+          return null;
+        } catch (error) {
+          console.error('Storage get error:', error);
+          return null;
+        }
+      },
+      set: async (key, value) => {
+        try {
+          if (!db) return null;
+          await db.collection('poData').doc(key).set({ value });
+          return { key, value };
+        } catch (error) {
+          console.error('Storage set error:', error);
+          return null;
+        }
+      }
+    };
+
+    // Icon Component
+    const Icon = ({ name, size = 24 }) => {
+      const iconRef = useRef(null);
+      useEffect(() => {
+        if (iconRef.current && lucide[name]) {
+          const icon = lucide.createElement(lucide[name]);
+          if (icon) {
+            iconRef.current.innerHTML = '';
+            iconRef.current.appendChild(icon);
+          }
+        }
+      }, [name]);
+      return <i ref={iconRef} style={{ width: size, height: size, display: 'inline-block', verticalAlign: 'middle' }} />;
+    };
+
+    // Main App Component
+    const POGenerator = () => {
+      const [activeTab, setActiveTab] = useState('create');
+      const [vendors, setVendors] = useState([]);
+      const [projects, setProjects] = useState([]);
+      const [purchaseOrders, setPurchaseOrders] = useState([]);
+      const [currentPO, setCurrentPO] = useState(null);
+      const [isLoading, setIsLoading] = useState(true);
+
+      useEffect(() => {
+        const loadData = async () => {
+          if (!isFirebaseConfigured) {
+            setIsLoading(false);
+            return;
+          }
+          
+          const vendorsData = await storage.get('vendors');
+          const projectsData = await storage.get('projects');
+          const posData = await storage.get('purchaseOrders');
+          
+          if (vendorsData?.value) setVendors(JSON.parse(vendorsData.value));
+          if (projectsData?.value) setProjects(JSON.parse(projectsData.value));
+          if (posData?.value) setPurchaseOrders(JSON.parse(posData.value));
+          
+          setIsLoading(false);
+        };
+        loadData();
+      }, []);
+
+      const saveVendors = async (newVendors) => {
+        setVendors(newVendors);
+        await storage.set('vendors', JSON.stringify(newVendors));
+      };
+
+      const saveProjects = async (newProjects) => {
+        setProjects(newProjects);
+        await storage.set('projects', JSON.stringify(newProjects));
+      };
+
+      const savePurchaseOrders = async (newPOs) => {
+        setPurchaseOrders(newPOs);
+        await storage.set('purchaseOrders', JSON.stringify(newPOs));
+      };
+
+      const initializePO = () => {
+        setCurrentPO({
+          id: Date.now(),
+          poNumber: 'PO-' + Date.now().toString().slice(-6),
+          date: new Date().toISOString().split('T')[0],
+          vendorId: '',
+          projectId: '',
+          lineItems: [{ item: '', quantity: 1, modelNumber: '', unitPrice: 0 }],
+          freight: 0,
+          tax: 0,
+          notes: '',
+          status: {
+            approved: false,
+            sent: false,
+            executed: false,
+            received: false,
+            amountInvoiced: 0,
+            complete: false
+          }
+        });
+      };
+
+      const tabs = [
+        { id: 'create', label: 'Create PO', icon: 'Plus' },
+        { id: 'changeOrders', label: 'Change Orders', icon: 'FileEdit' },
+        { id: 'track', label: 'Track Orders', icon: 'FileText' },
+        { id: 'vendors', label: 'Vendors', icon: 'Building2' },
+        { id: 'projects', label: 'Projects', icon: 'MapPin' }
+      ];
+
+      return (
+        <div style={{ minHeight: '100vh' }}>
+          <div style={{ maxWidth: '1280px', margin: '0 auto', padding: '32px' }}>
+            
+            <header style={{ marginBottom: '48px', textAlign: 'center' }}>
+              <h1 style={{ 
+                fontSize: '3rem', 
+                fontWeight: 'bold', 
+                marginBottom: '12px',
+                background: 'linear-gradient(to right, rgb(30, 58, 138), rgb(30, 64, 175))',
+                WebkitBackgroundClip: 'text',
+                WebkitTextFillColor: 'transparent'
+              }}>
+                Purchase Order Management
+              </h1>
+              <p style={{ color: 'rgb(71, 85, 105)', fontSize: '1.125rem' }}>
+                Streamlined procurement workflow from creation to completion
+              </p>
+              <p style={{ color: 'rgb(100, 116, 139)', fontSize: '0.875rem', marginTop: '8px' }}>
+                🔥 Firebase Cloud Database - Real-time team sync
+              </p>
+            </header>
+
+            {!isFirebaseConfigured && (
+              <div style={{ 
+                background: 'linear-gradient(to right, rgb(254, 243, 199), rgb(253, 230, 138))', 
+                border: '2px solid rgb(251, 191, 36)',
+                borderRadius: '12px', 
+                padding: '20px', 
+                marginBottom: '24px',
+                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+                  <Icon name="AlertTriangle" size={24} />
+                  <div>
+                    <h3 style={{ fontSize: '1.125rem', fontWeight: '600', marginBottom: '8px', color: 'rgb(146, 64, 14)' }}>
+                      Firebase Not Configured
+                    </h3>
+                    <p style={{ fontSize: '0.875rem', marginBottom: '12px', color: 'rgb(120, 53, 15)' }}>
+                      This version requires Firebase setup. Follow the setup instructions to connect your Firebase project.
+                    </p>
+                    <div style={{ background: 'white', padding: '12px', borderRadius: '8px', fontSize: '0.75rem', fontFamily: 'monospace', color: 'rgb(51, 65, 85)' }}>
+                      Edit the file and replace the <strong>firebaseConfig</strong> values with your project details.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {isLoading ? (
+              <div style={{ textAlign: 'center', padding: '80px 0' }}>
+                <div style={{ fontSize: '1.5rem', color: 'rgb(100, 116, 139)', marginBottom: '16px' }}>
+                  Loading data from Firebase...
+                </div>
+                <div style={{ fontSize: '3rem' }}>⏳</div>
+              </div>
+            ) : (
+              <>
+                <nav style={{ 
+                  display: 'flex', 
+                  gap: '8px', 
+                  marginBottom: '32px', 
+                  background: 'rgba(255, 255, 255, 0.6)', 
+                  backdropFilter: 'blur(16px)',
+                  borderRadius: '16px', 
+                  padding: '8px', 
+                  boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)'
+                }}>
+                  {tabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id)}
+                      style={{
+                        flex: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '8px',
+                        padding: '16px 24px',
+                        borderRadius: '12px',
+                        fontWeight: '500',
+                        border: 'none',
+                        cursor: 'pointer',
+                        transition: 'all 0.3s',
+                        background: activeTab === tab.id 
+                          ? 'linear-gradient(to right, rgb(37, 99, 235), rgb(29, 78, 216))'
+                          : 'transparent',
+                        color: activeTab === tab.id ? 'white' : 'rgb(71, 85, 105)',
+                        boxShadow: activeTab === tab.id ? '0 10px 15px -3px rgba(0, 0, 0, 0.1)' : 'none'
+                      }}
+                    >
+                      <Icon name={tab.icon} size={20} />
+                      {tab.label}
+                    </button>
+                  ))}
+                </nav>
+
+                <div style={{ 
+                  background: 'rgba(255, 255, 255, 0.8)', 
+                  backdropFilter: 'blur(16px)',
+                  borderRadius: '16px', 
+                  boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+                  padding: '32px'
+                }}>
+                  {activeTab === 'create' && (
+                    <CreatePOView 
+                      currentPO={currentPO}
+                      setCurrentPO={setCurrentPO}
+                      vendors={vendors}
+                      projects={projects}
+                      initializePO={initializePO}
+                      savePurchaseOrders={savePurchaseOrders}
+                      purchaseOrders={purchaseOrders}
+                    />
+                  )}
+                  
+                  {activeTab === 'changeOrders' && (
+                    <ChangeOrdersView 
+                      purchaseOrders={purchaseOrders}
+                      vendors={vendors}
+                      projects={projects}
+                      savePurchaseOrders={savePurchaseOrders}
+                    />
+                  )}
+                  
+                  {activeTab === 'track' && (
+                    <TrackPOView 
+                      purchaseOrders={purchaseOrders}
+                      vendors={vendors}
+                      projects={projects}
+                      savePurchaseOrders={savePurchaseOrders}
+                    />
+                  )}
+                  
+                  {activeTab === 'vendors' && (
+                    <VendorsView 
+                      vendors={vendors}
+                      saveVendors={saveVendors}
+                    />
+                  )}
+                  
+                  {activeTab === 'projects' && (
+                    <ProjectsView 
+                      projects={projects}
+                      saveProjects={saveProjects}
+                    />
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    // Create PO View
+    const CreatePOView = ({ currentPO, setCurrentPO, vendors, projects, initializePO, savePurchaseOrders, purchaseOrders }) => {
+      useEffect(() => {
+        if (!currentPO) initializePO();
+      }, []);
+
+      if (!currentPO) return null;
+
+      const addLineItem = () => {
+        setCurrentPO({
+          ...currentPO,
+          lineItems: [...currentPO.lineItems, { item: '', quantity: 1, modelNumber: '', unitPrice: 0 }]
+        });
+      };
+
+      const updateLineItem = (index, field, value) => {
+        const newLineItems = [...currentPO.lineItems];
+        newLineItems[index][field] = value;
+        setCurrentPO({ ...currentPO, lineItems: newLineItems });
+      };
+
+      const removeLineItem = (index) => {
+        if (currentPO.lineItems.length > 1) {
+          setCurrentPO({ ...currentPO, lineItems: currentPO.lineItems.filter((_, i) => i !== index) });
+        }
+      };
+
+      const calculateLineTotal = (item) => {
+        return (parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0);
+      };
+
+      const calculateSubtotal = () => {
+        return currentPO.lineItems.reduce((sum, item) => sum + calculateLineTotal(item), 0);
+      };
+
+      const calculateTotal = () => {
+        return calculateSubtotal() + (parseFloat(currentPO.freight) || 0) + (parseFloat(currentPO.tax) || 0);
+      };
+
+      const savePO = () => {
+        const newPO = { ...currentPO, createdAt: new Date().toISOString() };
+        savePurchaseOrders([...purchaseOrders, newPO]);
+        initializePO();
+        alert('Purchase Order created successfully!');
+      };
+
+      const generatePDF = () => {
+        const vendor = vendors.find(v => v.id === parseInt(currentPO.vendorId));
+        const project = projects.find(p => p.id === parseInt(currentPO.projectId));
+        
+        const printWindow = window.open('', '_blank');
+        const html = generatePDFHTML(currentPO, vendor, project, calculateSubtotal(), calculateTotal());
+        printWindow.document.write(html);
+        printWindow.document.close();
+        printWindow.print();
+      };
+
+      return (
+        <div className="animate-slide-in" style={{ padding: '20px' }}>
+          <h2 style={{ fontSize: '1.875rem', fontWeight: 'bold', marginBottom: '24px' }}>Create Purchase Order</h2>
+          
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '24px', marginBottom: '32px' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '8px' }}>PO Number</label>
+              <input
+                type="text"
+                value={currentPO.poNumber}
+                onChange={(e) => setCurrentPO({ ...currentPO, poNumber: e.target.value })}
+                style={{ width: '100%', padding: '12px 16px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '8px' }}>Date</label>
+              <input
+                type="date"
+                value={currentPO.date}
+                onChange={(e) => setCurrentPO({ ...currentPO, date: e.target.value })}
+                style={{ width: '100%', padding: '12px 16px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '8px' }}>Vendor</label>
+              <select
+                value={currentPO.vendorId}
+                onChange={(e) => setCurrentPO({ ...currentPO, vendorId: e.target.value })}
+                style={{ width: '100%', padding: '12px 16px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }}
+              >
+                <option value="">Select Vendor</option>
+                {vendors.map(vendor => (
+                  <option key={vendor.id} value={vendor.id}>{vendor.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '8px' }}>Project</label>
+              <select
+                value={currentPO.projectId}
+                onChange={(e) => setCurrentPO({ ...currentPO, projectId: e.target.value })}
+                style={{ width: '100%', padding: '12px 16px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }}
+              >
+                <option value="">Select Project</option>
+                {projects.map(project => (
+                  <option key={project.id} value={project.id}>{project.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '32px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ fontSize: '1.25rem', fontWeight: '600' }}>Line Items</h3>
+              <button onClick={addLineItem} style={{ padding: '8px 16px', background: 'rgb(37, 99, 235)', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
+                <Icon name="Plus" size={18} /> Add Item
+              </button>
+            </div>
+
+            {currentPO.lineItems.map((item, index) => (
+              <div key={index} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 100px 40px', gap: '12px', alignItems: 'center', background: 'rgb(248, 250, 252)', padding: '16px', borderRadius: '8px', marginBottom: '12px' }}>
+                <input type="text" placeholder="Item Description" value={item.item} onChange={(e) => updateLineItem(index, 'item', e.target.value)} style={{ padding: '8px 12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+                <input type="text" placeholder="Model #" value={item.modelNumber} onChange={(e) => updateLineItem(index, 'modelNumber', e.target.value)} style={{ padding: '8px 12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+                <input type="number" placeholder="Qty" value={item.quantity} onChange={(e) => updateLineItem(index, 'quantity', e.target.value)} style={{ padding: '8px 12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+                <input type="number" step="0.01" placeholder="Unit Price" value={item.unitPrice} onChange={(e) => updateLineItem(index, 'unitPrice', e.target.value)} style={{ padding: '8px 12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+                <div style={{ textAlign: 'right', fontWeight: '600' }}>${calculateLineTotal(item).toFixed(2)}</div>
+                <button onClick={() => removeLineItem(index)} disabled={currentPO.lineItems.length === 1} style={{ padding: '8px', background: 'transparent', border: 'none', color: currentPO.lineItems.length === 1 ? 'rgb(203, 213, 225)' : 'rgb(220, 38, 38)', cursor: currentPO.lineItems.length === 1 ? 'not-allowed' : 'pointer' }}>
+                  <Icon name="Trash2" size={18} />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginBottom: '32px' }}>
+            <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '8px' }}>Notes</label>
+            <textarea
+              value={currentPO.notes}
+              onChange={(e) => setCurrentPO({ ...currentPO, notes: e.target.value })}
+              placeholder="Add any special instructions or notes here..."
+              style={{ width: '100%', padding: '12px 16px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px', minHeight: '80px', resize: 'vertical' }}
+            />
+          </div>
+
+          <div style={{ background: 'linear-gradient(to bottom right, rgb(248, 250, 252), rgb(219, 234, 254))', padding: '24px', borderRadius: '8px', marginBottom: '32px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '24px', marginBottom: '16px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '8px' }}>Freight</label>
+                <input type="number" step="0.01" value={currentPO.freight} onChange={(e) => setCurrentPO({ ...currentPO, freight: e.target.value })} style={{ width: '100%', padding: '12px 16px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '8px' }}>Tax</label>
+                <input type="number" step="0.01" value={currentPO.tax} onChange={(e) => setCurrentPO({ ...currentPO, tax: e.target.value })} style={{ width: '100%', padding: '12px 16px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              </div>
+            </div>
+
+            <div style={{ textAlign: 'right', paddingTop: '16px', borderTop: '2px solid rgb(203, 213, 225)' }}>
+              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'rgb(30, 58, 138)' }}>
+                TOTAL: ${calculateTotal().toFixed(2)}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '16px' }}>
+            <button onClick={savePO} style={{ flex: 1, padding: '16px 24px', background: 'linear-gradient(to right, rgb(37, 99, 235), rgb(29, 78, 216))', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', fontSize: '1.125rem' }}>
+              <Icon name="Check" size={20} /> Save Purchase Order
+            </button>
+            <button onClick={generatePDF} style={{ padding: '16px 24px', background: 'rgb(51, 65, 85)', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' }}>
+              <Icon name="Printer" size={20} /> Print PDF
+            </button>
+          </div>
+        </div>
+      );
+    };
+
+    // PDF Generation Function (avoiding nested template literals)
+    function generatePDFHTML(po, vendor, project, subtotal, total) {
+      let html = '<!DOCTYPE html><html><head><title>Purchase Order ' + po.poNumber + '</title>';
+      html += '<style>';
+      html += 'body { font-family: Arial, sans-serif; padding: 20px 30px; max-width: 800px; margin: 0 auto; font-size: 9px; line-height: 1.3; }';
+      html += '.logo-area { height: 60px; border-bottom: 1px solid #ccc; margin-bottom: 10px; }';
+      html += '.bill-to { font-size: 8px; line-height: 1.3; margin-bottom: 15px; }';
+      html += '.bill-to .company { font-weight: bold; font-size: 9px; }';
+      html += '.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #1e40af; }';
+      html += '.header h1 { font-size: 20px; margin: 0; color: #1e3a8a; font-weight: bold; }';
+      html += '.po-info { text-align: right; font-size: 9px; color: #333; }';
+      html += '.po-info-line { margin: 2px 0; }';
+      html += '.addresses { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-bottom: 15px; }';
+      html += '.address-block { padding: 8px; background: #f8fafc; border-radius: 3px; border: 1px solid #e2e8f0; }';
+      html += '.address-block h3 { margin: 0 0 5px 0; color: #1e40af; font-size: 9px; text-transform: uppercase; font-weight: 600; letter-spacing: 0.3px; }';
+      html += '.address-block p { margin: 1px 0; font-size: 8px; line-height: 1.3; }';
+      html += '.address-block .company-name { font-weight: bold; font-size: 9px; margin-bottom: 2px; }';
+      html += 'table { width: 100%; border-collapse: collapse; margin: 10px 0; }';
+      html += 'th { background: #1e40af; color: white; padding: 5px 4px; text-align: left; font-weight: 600; font-size: 8px; border: 1px solid #1e40af; }';
+      html += 'td { padding: 4px; border: 1px solid #e2e8f0; font-size: 8px; line-height: 1.2; }';
+      html += 'th.right, td.right { text-align: right; }';
+      html += 'th.center, td.center { text-align: center; }';
+      html += '.notes { margin: 10px 0; padding: 8px; background: #f8fafc; border-radius: 3px; border: 1px solid #e2e8f0; }';
+      html += '.notes h4 { margin: 0 0 4px 0; color: #1e40af; font-size: 8px; text-transform: uppercase; font-weight: 600; }';
+      html += '.notes p { margin: 0; font-size: 8px; white-space: pre-wrap; line-height: 1.3; }';
+      html += '.change-orders { margin: 10px 0; }';
+      html += '.change-orders h4 { margin: 0 0 6px 0; color: #1e40af; font-size: 9px; text-transform: uppercase; font-weight: 600; }';
+      html += '.co-item { margin-bottom: 8px; padding: 6px; background: #f8fafc; border-radius: 3px; border: 1px solid #e2e8f0; }';
+      html += '.co-header { display: flex; justify-content: space-between; margin-bottom: 4px; padding-bottom: 3px; border-bottom: 1px solid #e2e8f0; }';
+      html += '.co-title { font-size: 8px; font-weight: 600; color: #1e3a8a; }';
+      html += '.co-date { font-size: 7px; color: #64748b; }';
+      html += '.co-amount { font-size: 9px; font-weight: 700; }';
+      html += '.co-table { margin-top: 4px; }';
+      html += '.co-table th { font-size: 7px; padding: 3px; }';
+      html += '.co-table td { font-size: 7px; padding: 3px; }';
+      html += '.totals { margin-top: 15px; }';
+      html += '.totals table { margin-left: auto; width: 200px; border: none; }';
+      html += '.totals td { border: none; padding: 3px 6px; font-size: 8px; }';
+      html += '.totals tr.total-row td { font-weight: bold; font-size: 10px; background: #1e40af; color: white; padding: 5px 6px; }';
+      html += '.signature-section { margin-top: 40px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 40px; page-break-inside: avoid; }';
+      html += '.signature-block { }';
+      html += '.signature-block .company-name { font-size: 9px; font-weight: 600; margin-bottom: 25px; color: #1e3a8a; }';
+      html += '.signature-line { border-top: 1px solid #333; padding-top: 3px; margin-top: 3px; }';
+      html += '.signature-line .field { font-size: 7px; color: #666; }';
+      html += '@media print { body { padding: 15px 20px; } }';
+      html += '</style></head><body>';
+      
+      // Logo area (placeholder) and Bill To
+      html += '<div class="logo-area"></div>';
+      html += '<div class="bill-to">';
+      html += '<div class="company">DevCo US</div>';
+      html += '<div>10900 NE 8th St. Suite 1200</div>';
+      html += '<div>Bellevue, WA 98004</div>';
+      html += '<div>procurementaccounting@devcous.com</div>';
+      html += '</div>';
+      
+      // Header
+      html += '<div class="header">';
+      html += '<h1>PURCHASE ORDER</h1>';
+      html += '<div class="po-info">';
+      html += '<div class="po-info-line"><strong>PO #:</strong> ' + po.poNumber + '</div>';
+      html += '<div class="po-info-line"><strong>Date:</strong> ' + new Date(po.date).toLocaleDateString() + '</div>';
+      html += '</div>';
+      html += '</div>';
+      
+      // Vendor and Ship To (2 columns)
+      html += '<div class="addresses">';
+      html += '<div class="address-block"><h3>Vendor</h3>';
+      html += '<p class="company-name">' + (vendor ? vendor.name : 'N/A') + '</p>';
+      if (vendor) {
+        html += '<p>' + vendor.street + '</p>';
+        html += '<p>' + vendor.city + ', ' + vendor.state + ' ' + vendor.zip + '</p>';
+        html += '<p style="margin-top: 3px;">' + vendor.contactName + '</p>';
+        html += '<p>' + vendor.contactPhone + '</p>';
+        html += '<p>' + vendor.contactEmail + '</p>';
+        html += '<p style="margin-top: 3px;"><strong>Terms:</strong> ' + vendor.paymentTerms + '</p>';
+      }
+      html += '</div>';
+      
+      html += '<div class="address-block"><h3>Ship To</h3>';
+      html += '<p class="company-name">' + (project ? project.name : 'N/A') + '</p>';
+      if (project) {
+        html += '<p>' + project.street + '</p>';
+        html += '<p>' + project.city + ', ' + project.state + ' ' + project.zip + '</p>';
+        html += '<p style="margin-top: 3px;">' + project.contactName + '</p>';
+        html += '<p>' + project.contactPhone + '</p>';
+        html += '<p>' + project.contactEmail + '</p>';
+      }
+      html += '</div></div>';
+      
+      // Line Items - Compact Table
+      html += '<table><thead><tr>';
+      html += '<th style="width: 40%;">Item</th>';
+      html += '<th style="width: 18%;">Model #</th>';
+      html += '<th class="center" style="width: 8%;">Qty</th>';
+      html += '<th class="right" style="width: 14%;">Unit Price</th>';
+      html += '<th class="right" style="width: 14%;">Total</th>';
+      html += '</tr></thead><tbody>';
+      
+      po.lineItems.forEach(item => {
+        const lineTotal = (parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0);
+        html += '<tr>';
+        html += '<td>' + item.item + '</td>';
+        html += '<td>' + item.modelNumber + '</td>';
+        html += '<td class="center">' + item.quantity + '</td>';
+        html += '<td class="right">$' + parseFloat(item.unitPrice).toFixed(2) + '</td>';
+        html += '<td class="right">$' + lineTotal.toFixed(2) + '</td>';
+        html += '</tr>';
+      });
+      
+      html += '</tbody></table>';
+      
+      // Notes
+      if (po.notes) {
+        html += '<div class="notes">';
+        html += '<h4>Notes</h4>';
+        html += '<p>' + po.notes + '</p>';
+        html += '</div>';
+      }
+      
+      // Change Orders - Compact
+      if (po.changeOrders && po.changeOrders.length > 0) {
+        html += '<div class="change-orders"><h4>Change Orders</h4>';
+        po.changeOrders.forEach((co, idx) => {
+          html += '<div class="co-item">';
+          html += '<div class="co-header">';
+          html += '<div>';
+          html += '<div class="co-title">CO #' + (idx + 1) + ': ' + co.description + '</div>';
+          html += '<div class="co-date">' + new Date(co.date).toLocaleDateString() + '</div>';
+          html += '</div>';
+          const coColor = co.amount >= 0 ? '#22c55e' : '#ef4444';
+          html += '<div class="co-amount" style="color: ' + coColor + ';">' + (co.amount >= 0 ? '+' : '') + '$' + co.amount.toFixed(2) + '</div>';
+          html += '</div>';
+          
+          if (co.lineItems && co.lineItems.length > 0) {
+            html += '<table class="co-table"><thead><tr>';
+            html += '<th style="width: 50%;">Item</th>';
+            html += '<th class="right" style="width: 12%;">Qty</th>';
+            html += '<th class="right" style="width: 18%;">Unit Price</th>';
+            html += '<th class="right" style="width: 20%;">Total</th>';
+            html += '</tr></thead><tbody>';
+            co.lineItems.forEach(item => {
+              const lineTotal = (parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0);
+              const lineColor = lineTotal >= 0 ? '#22c55e' : '#ef4444';
+              html += '<tr>';
+              html += '<td>' + item.item + '</td>';
+              html += '<td class="right">' + item.quantity + '</td>';
+              html += '<td class="right">$' + parseFloat(item.unitPrice).toFixed(2) + '</td>';
+              html += '<td class="right" style="color: ' + lineColor + '; font-weight: 600;">';
+              html += (lineTotal >= 0 ? '+' : '') + '$' + lineTotal.toFixed(2) + '</td>';
+              html += '</tr>';
+            });
+            html += '</tbody></table>';
+          }
+          html += '</div>';
+        });
+        html += '</div>';
+      }
+      
+      // Totals
+      const changeOrderTotal = po.changeOrders ? po.changeOrders.reduce((sum, co) => sum + co.amount, 0) : 0;
+      html += '<div class="totals"><table>';
+      html += '<tr><td>Subtotal:</td><td class="right">$' + subtotal.toFixed(2) + '</td></tr>';
+      html += '<tr><td>Freight:</td><td class="right">$' + parseFloat(po.freight || 0).toFixed(2) + '</td></tr>';
+      html += '<tr><td>Tax:</td><td class="right">$' + parseFloat(po.tax || 0).toFixed(2) + '</td></tr>';
+      if (changeOrderTotal !== 0) {
+        const coColor = changeOrderTotal >= 0 ? '#22c55e' : '#ef4444';
+        html += '<tr><td>Change Orders:</td><td class="right" style="color: ' + coColor + '; font-weight: 600;">';
+        html += (changeOrderTotal >= 0 ? '+' : '') + '$' + changeOrderTotal.toFixed(2) + '</td></tr>';
+      }
+      html += '<tr class="total-row"><td>TOTAL:</td><td class="right">$' + total.toFixed(2) + '</td></tr>';
+      html += '</table></div>';
+      
+      // Signature Section
+      const vendorName = vendor ? vendor.name : 'Vendor';
+      html += '<div class="signature-section">';
+      html += '<div class="signature-block">';
+      html += '<div class="company-name">' + vendorName + '</div>';
+      html += '<div class="signature-line">';
+      html += '<div class="field">Signature</div>';
+      html += '</div>';
+      html += '<div class="signature-line" style="margin-top: 15px;">';
+      html += '<div class="field">Date</div>';
+      html += '</div>';
+      html += '</div>';
+      html += '<div class="signature-block">';
+      html += '<div class="company-name">DevCo US Procurement, LLC</div>';
+      html += '<div class="signature-line">';
+      html += '<div class="field">Signature</div>';
+      html += '</div>';
+      html += '<div class="signature-line" style="margin-top: 15px;">';
+      html += '<div class="field">Date</div>';
+      html += '</div>';
+      html += '</div>';
+      html += '</div>';
+      
+      html += '</body></html>';
+      return html;
+    }
+
+    // Change Orders View
+    const ChangeOrdersView = ({ purchaseOrders, vendors, projects, savePurchaseOrders }) => {
+      const [selectedPOId, setSelectedPOId] = useState('');
+      const [changeOrderData, setChangeOrderData] = useState({
+        description: '',
+        lineItems: [{ item: '', quantity: 1, unitPrice: 0 }],
+        date: new Date().toISOString().split('T')[0]
+      });
+
+      const selectedPO = purchaseOrders.find(po => po.id === parseInt(selectedPOId));
+
+      const addLineItem = () => {
+        setChangeOrderData({
+          ...changeOrderData,
+          lineItems: [...changeOrderData.lineItems, { item: '', quantity: 1, unitPrice: 0 }]
+        });
+      };
+
+      const updateLineItem = (index, field, value) => {
+        const newLineItems = [...changeOrderData.lineItems];
+        newLineItems[index][field] = value;
+        setChangeOrderData({ ...changeOrderData, lineItems: newLineItems });
+      };
+
+      const removeLineItem = (index) => {
+        if (changeOrderData.lineItems.length > 1) {
+          setChangeOrderData({ ...changeOrderData, lineItems: changeOrderData.lineItems.filter((_, i) => i !== index) });
+        }
+      };
+
+      const calculateLineTotal = (item) => {
+        return (parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0);
+      };
+
+      const calculateChangeOrderTotal = () => {
+        return changeOrderData.lineItems.reduce((sum, item) => sum + calculateLineTotal(item), 0);
+      };
+
+      const saveChangeOrder = () => {
+        if (!selectedPOId) {
+          alert('Please select a Purchase Order');
+          return;
+        }
+        if (!changeOrderData.description.trim()) {
+          alert('Please enter a change order description');
+          return;
+        }
+
+        const updatedPOs = purchaseOrders.map(po => {
+          if (po.id === parseInt(selectedPOId)) {
+            const currentChangeOrders = po.changeOrders || [];
+            return {
+              ...po,
+              changeOrders: [...currentChangeOrders, {
+                id: Date.now(),
+                description: changeOrderData.description,
+                date: changeOrderData.date,
+                lineItems: changeOrderData.lineItems,
+                amount: calculateChangeOrderTotal()
+              }]
+            };
+          }
+          return po;
+        });
+
+        savePurchaseOrders(updatedPOs);
+        setSelectedPOId('');
+        setChangeOrderData({
+          description: '',
+          lineItems: [{ item: '', quantity: 1, unitPrice: 0 }],
+          date: new Date().toISOString().split('T')[0]
+        });
+        alert('Change Order created successfully!');
+      };
+
+      return (
+        <div className="animate-slide-in" style={{ padding: '20px' }}>
+          <h2 style={{ fontSize: '1.875rem', fontWeight: 'bold', marginBottom: '24px' }}>Create Change Order</h2>
+
+          <div style={{ marginBottom: '32px' }}>
+            <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '8px' }}>Select Purchase Order</label>
+            <select value={selectedPOId} onChange={(e) => setSelectedPOId(e.target.value)} style={{ width: '100%', padding: '12px 16px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }}>
+              <option value="">-- Select a PO --</option>
+              {purchaseOrders.map(po => {
+                const vendor = vendors.find(v => v.id === parseInt(po.vendorId));
+                const project = projects.find(p => p.id === parseInt(po.projectId));
+                return (
+                  <option key={po.id} value={po.id}>
+                    {po.poNumber} - {vendor ? vendor.name : 'Unknown'} → {project ? project.name : 'Unknown'}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          {selectedPO && (
+            <div>
+              <div style={{ background: 'linear-gradient(to right, rgb(241, 245, 249), rgb(248, 250, 252))', padding: '16px', borderRadius: '8px', marginBottom: '24px', border: '1px solid rgb(226, 232, 240)' }}>
+                <h3 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '8px' }}>Selected PO: {selectedPO.poNumber}</h3>
+                <div style={{ fontSize: '0.875rem', color: 'rgb(71, 85, 105)' }}>
+                  <p>Date: {new Date(selectedPO.date).toLocaleDateString()}</p>
+                  <p>Existing Change Orders: {(selectedPO.changeOrders || []).length}</p>
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '24px' }}>
+                <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '8px' }}>Change Order Description *</label>
+                <input
+                  type="text"
+                  value={changeOrderData.description}
+                  onChange={(e) => setChangeOrderData({ ...changeOrderData, description: e.target.value })}
+                  placeholder="e.g., Additional electrical work, Material upgrade, Scope reduction"
+                  style={{ width: '100%', padding: '12px 16px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '24px' }}>
+                <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '500', marginBottom: '8px' }}>Date</label>
+                <input
+                  type="date"
+                  value={changeOrderData.date}
+                  onChange={(e) => setChangeOrderData({ ...changeOrderData, date: e.target.value })}
+                  style={{ width: '100%', padding: '12px 16px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '32px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: '600' }}>Line Items</h3>
+                  <button onClick={addLineItem} style={{ padding: '8px 16px', background: 'rgb(37, 99, 235)', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
+                    <Icon name="Plus" size={18} /> Add Item
+                  </button>
+                </div>
+
+                <div style={{ fontSize: '0.875rem', color: 'rgb(100, 116, 139)', marginBottom: '12px', padding: '12px', background: 'rgb(254, 243, 199)', borderRadius: '8px', border: '1px solid rgb(251, 191, 36)' }}>
+                  <strong>Tip:</strong> Use negative quantities or prices for reductions/credits (e.g., -1 quantity or -$500 price)
+                </div>
+
+                {changeOrderData.lineItems.map((item, index) => {
+                  const lineTotal = calculateLineTotal(item);
+                  return (
+                    <div key={index} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 100px 40px', gap: '12px', alignItems: 'center', background: 'rgb(248, 250, 252)', padding: '16px', borderRadius: '8px', border: '1px solid rgb(226, 232, 240)', marginBottom: '12px' }}>
+                      <input type="text" placeholder="Item Description" value={item.item} onChange={(e) => updateLineItem(index, 'item', e.target.value)} style={{ padding: '8px 12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+                      <input type="number" placeholder="Quantity" value={item.quantity} onChange={(e) => updateLineItem(index, 'quantity', e.target.value)} style={{ padding: '8px 12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+                      <input type="number" step="0.01" placeholder="Unit Price" value={item.unitPrice} onChange={(e) => updateLineItem(index, 'unitPrice', e.target.value)} style={{ padding: '8px 12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+                      <div style={{ textAlign: 'right', fontWeight: '600', color: lineTotal >= 0 ? 'rgb(22, 163, 74)' : 'rgb(220, 38, 38)', fontSize: '1rem' }}>
+                        {lineTotal >= 0 ? '+' : ''}${lineTotal.toFixed(2)}
+                      </div>
+                      <button onClick={() => removeLineItem(index)} disabled={changeOrderData.lineItems.length === 1} style={{ padding: '8px', background: 'transparent', border: 'none', color: changeOrderData.lineItems.length === 1 ? 'rgb(203, 213, 225)' : 'rgb(220, 38, 38)', cursor: changeOrderData.lineItems.length === 1 ? 'not-allowed' : 'pointer' }}>
+                        <Icon name="Trash2" size={18} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div style={{ background: 'linear-gradient(to bottom right, rgb(248, 250, 252), rgb(219, 234, 254))', padding: '24px', borderRadius: '8px', marginBottom: '32px', textAlign: 'right' }}>
+                <div style={{ fontSize: '2rem', fontWeight: 'bold', color: calculateChangeOrderTotal() >= 0 ? 'rgb(22, 163, 74)' : 'rgb(220, 38, 38)' }}>
+                  {calculateChangeOrderTotal() >= 0 ? '+' : ''}${calculateChangeOrderTotal().toFixed(2)}
+                </div>
+                <div style={{ fontSize: '0.875rem', color: 'rgb(100, 116, 139)', marginTop: '4px' }}>Change Order Total</div>
+              </div>
+
+              <button onClick={saveChangeOrder} style={{ width: '100%', padding: '16px 24px', background: 'linear-gradient(to right, rgb(168, 85, 247), rgb(147, 51, 234))', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', fontSize: '1.125rem' }}>
+                <Icon name="Check" size={20} /> Save Change Order
+              </button>
+            </div>
+          )}
+
+          {!selectedPOId && (
+            <div style={{ textAlign: 'center', padding: '48px 0', color: 'rgb(100, 116, 139)' }}>
+              <Icon name="FileEdit" size={64} />
+              <p style={{ fontSize: '1.125rem', marginTop: '16px' }}>Select a Purchase Order above to create a change order</p>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // Track PO View
+    const TrackPOView = ({ purchaseOrders, vendors, projects, savePurchaseOrders }) => {
+      const [expandedPO, setExpandedPO] = useState(null);
+      const [expandedProjects, setExpandedProjects] = useState({});
+
+      const toggleProject = (projectId) => {
+        setExpandedProjects(prev => ({ ...prev, [projectId]: !prev[projectId] }));
+      };
+
+      const updatePOStatus = (poId, statusField, value) => {
+        const updatedPOs = purchaseOrders.map(po => {
+          if (po.id === poId) {
+            return { ...po, status: { ...po.status, [statusField]: value } };
+          }
+          return po;
+        });
+        savePurchaseOrders(updatedPOs);
+      };
+
+      const addInvoice = (poId) => {
+        const amount = prompt('Enter invoice amount to add:');
+        if (amount && !isNaN(parseFloat(amount))) {
+          const updatedPOs = purchaseOrders.map(po => {
+            if (po.id === poId) {
+              const currentInvoiced = parseFloat(po.status.amountInvoiced) || 0;
+              return { ...po, status: { ...po.status, amountInvoiced: currentInvoiced + parseFloat(amount) } };
+            }
+            return po;
+          });
+          savePurchaseOrders(updatedPOs);
+        }
+      };
+
+      const deletePO = (poId) => {
+        if (confirm('Are you sure you want to delete this purchase order?')) {
+          savePurchaseOrders(purchaseOrders.filter(po => po.id !== poId));
+        }
+      };
+
+      const generatePOPDF = (po) => {
+        const vendor = vendors.find(v => v.id === parseInt(po.vendorId));
+        const project = projects.find(p => p.id === parseInt(po.projectId));
+        const subtotal = po.lineItems.reduce((sum, item) => sum + (parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0), 0);
+        const changeOrderTotal = (po.changeOrders || []).reduce((sum, co) => sum + co.amount, 0);
+        const total = subtotal + (parseFloat(po.freight) || 0) + (parseFloat(po.tax) || 0) + changeOrderTotal;
+        
+        const printWindow = window.open('', '_blank');
+        const html = generatePDFHTML(po, vendor, project, subtotal, total);
+        printWindow.document.write(html);
+        printWindow.document.close();
+        printWindow.print();
+      };
+
+      // Group POs by project
+      const posByProject = purchaseOrders.reduce((acc, po) => {
+        const projectId = po.projectId || 'unassigned';
+        if (!acc[projectId]) acc[projectId] = [];
+        acc[projectId].push(po);
+        return acc;
+      }, {});
+
+      const sortedProjects = Object.keys(posByProject).sort((a, b) => {
+        if (a === 'unassigned') return 1;
+        if (b === 'unassigned') return -1;
+        const projectA = projects.find(p => p.id === parseInt(a));
+        const projectB = projects.find(p => p.id === parseInt(b));
+        return (projectA?.name || '').localeCompare(projectB?.name || '');
+      });
+
+      if (purchaseOrders.length === 0) {
+        return (
+          <div className="animate-slide-in" style={{ padding: '20px' }}>
+            <h2 style={{ fontSize: '1.875rem', fontWeight: 'bold', marginBottom: '24px' }}>Track Purchase Orders</h2>
+            <div style={{ textAlign: 'center', padding: '48px 0', color: 'rgb(100, 116, 139)' }}>
+              <Icon name="FileText" size={64} />
+              <p style={{ fontSize: '1.125rem', marginTop: '16px' }}>No purchase orders yet</p>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="animate-slide-in" style={{ padding: '20px' }}>
+          <h2 style={{ fontSize: '1.875rem', fontWeight: 'bold', marginBottom: '24px' }}>Track Purchase Orders</h2>
+          
+          {sortedProjects.map(projectId => {
+            const project = projects.find(p => p.id === parseInt(projectId));
+            const projectPOs = posByProject[projectId];
+            const isProjectExpanded = expandedProjects[projectId];
+            const projectTotal = projectPOs.reduce((sum, po) => {
+              const poTotal = po.lineItems.reduce((s, item) => s + (parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0), 0) + (parseFloat(po.freight) || 0) + (parseFloat(po.tax) || 0);
+              const coTotal = (po.changeOrders || []).reduce((s, co) => s + co.amount, 0);
+              return sum + poTotal + coTotal;
+            }, 0);
+
+            return (
+              <div key={projectId} style={{ background: 'white', border: '2px solid rgb(226, 232, 240)', borderRadius: '12px', overflow: 'hidden', marginBottom: '16px' }}>
+                
+                {/* Project Header */}
+                <div onClick={() => toggleProject(projectId)} style={{ padding: '20px 24px', background: 'linear-gradient(to right, rgb(241, 245, 249), rgb(248, 250, 252))', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: isProjectExpanded ? '2px solid rgb(226, 232, 240)' : 'none' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <Icon name={isProjectExpanded ? "ChevronDown" : "ChevronRight"} size={24} />
+                    <div>
+                      <h3 style={{ fontSize: '1.25rem', fontWeight: 'bold', margin: 0 }}>
+                        {project ? project.name : 'Unassigned'}
+                      </h3>
+                      <p style={{ fontSize: '0.875rem', color: 'rgb(100, 116, 139)', margin: '4px 0 0 0' }}>
+                        {projectPOs.length} PO{projectPOs.length !== 1 ? 's' : ''}
+                      </p>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'rgb(30, 58, 138)' }}>
+                      ${projectTotal.toFixed(2)}
+                    </div>
+                    <div style={{ fontSize: '0.875rem', color: 'rgb(100, 116, 139)' }}>Project Total</div>
+                  </div>
+                </div>
+
+                {/* POs under this project */}
+                {isProjectExpanded && (
+                  <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {projectPOs.map(po => {
+                      const vendor = vendors.find(v => v.id === parseInt(po.vendorId));
+                      const isExpanded = expandedPO === po.id;
+                      
+                      const calculateTotal = () => {
+                        const subtotal = po.lineItems.reduce((sum, item) => sum + (parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0), 0);
+                        const baseTotal = subtotal + (parseFloat(po.freight) || 0) + (parseFloat(po.tax) || 0);
+                        const coTotal = (po.changeOrders || []).reduce((sum, co) => sum + co.amount, 0);
+                        return baseTotal + coTotal;
+                      };
+
+                      const statusSteps = [
+                        { key: 'approved', label: 'Approved' },
+                        { key: 'sent', label: 'Sent' },
+                        { key: 'executed', label: 'Executed' },
+                        { key: 'received', label: 'Received' },
+                        { key: 'complete', label: 'Complete' }
+                      ];
+
+                      const completedSteps = statusSteps.filter(step => po.status[step.key]).length;
+                      const progress = (completedSteps / statusSteps.length) * 100;
+                      
+                      let statusColor = 'rgb(239, 68, 68)';
+                      let statusBg = 'rgb(254, 226, 226)';
+                      let statusText = 'Not Started';
+                      
+                      if (completedSteps === statusSteps.length) {
+                        statusColor = 'rgb(34, 197, 94)';
+                        statusBg = 'rgb(220, 252, 231)';
+                        statusText = 'Complete';
+                      } else if (completedSteps >= 3) {
+                        statusColor = 'rgb(59, 130, 246)';
+                        statusBg = 'rgb(219, 234, 254)';
+                        statusText = 'Near Completion';
+                      } else if (completedSteps > 0) {
+                        statusColor = 'rgb(251, 146, 60)';
+                        statusBg = 'rgb(254, 243, 199)';
+                        statusText = 'In Progress';
+                      }
+
+                      return (
+                        <div key={po.id} style={{ background: 'rgb(249, 250, 251)', border: '2px solid rgb(229, 231, 235)', borderRadius: '8px', overflow: 'hidden', borderLeftWidth: '4px', borderLeftColor: statusColor }}>
+                          
+                          <div style={{ padding: '16px', cursor: 'pointer' }} onClick={() => setExpandedPO(isExpanded ? null : po.id)}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+                                  <h3 style={{ fontSize: '1.25rem', fontWeight: 'bold', margin: 0 }}>{po.poNumber}</h3>
+                                  <span style={{ padding: '4px 12px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: '600', background: statusBg, color: statusColor }}>
+                                    {statusText}
+                                  </span>
+                                </div>
+                                <p style={{ color: 'rgb(71, 85, 105)', margin: '4px 0', fontSize: '0.875rem' }}>
+                                  Vendor: {vendor ? vendor.name : 'Unknown'}
+                                </p>
+                                <p style={{ fontSize: '0.75rem', color: 'rgb(100, 116, 139)', marginTop: '4px' }}>
+                                  Date: {new Date(po.date).toLocaleDateString()}
+                                </p>
+                              </div>
+                              <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); deletePO(po.id); }} 
+                                  style={{ 
+                                    padding: '6px', 
+                                    background: 'rgb(220, 38, 38)', 
+                                    color: 'white', 
+                                    border: 'none', 
+                                    borderRadius: '6px', 
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    width: '32px',
+                                    height: '32px'
+                                  }}
+                                  title="Delete PO"
+                                >
+                                  <Icon name="Trash2" size={16} />
+                                </button>
+                                <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'rgb(30, 58, 138)' }}>
+                                  ${calculateTotal().toFixed(2)}
+                                </div>
+                                {(po.changeOrders || []).length > 0 && (
+                                  <div style={{ fontSize: '0.75rem', color: 'rgb(100, 116, 139)', marginTop: '2px' }}>
+                                    ({po.changeOrders.length} change order{po.changeOrders.length !== 1 ? 's' : ''})
+                                  </div>
+                                )}
+                                <div style={{ fontSize: '0.75rem', color: 'rgb(100, 116, 139)', marginTop: '4px' }}>
+                                  {completedSteps}/{statusSteps.length} steps
+                                </div>
+                                <div style={{ fontSize: '0.75rem', color: statusColor, marginTop: '2px', fontWeight: '600' }}>
+                                  Invoiced: ${(po.status.amountInvoiced || 0).toFixed(2)}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Progress Bar */}
+                            <div style={{ marginBottom: '12px' }}>
+                              <div style={{ height: '6px', background: 'rgb(226, 232, 240)', borderRadius: '9999px', overflow: 'hidden' }}>
+                                <div style={{ height: '100%', background: 'linear-gradient(to right, rgb(59, 130, 246), rgb(37, 99, 235))', width: progress + '%', transition: 'width 0.5s' }} />
+                              </div>
+                            </div>
+
+                            {/* Status Checkboxes */}
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                              {statusSteps.map(step => (
+                                <label key={step.key} onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', background: 'white', borderRadius: '6px', cursor: 'pointer', fontSize: '0.875rem', border: '1px solid rgb(229, 231, 235)' }}>
+                                  <input type="checkbox" checked={po.status[step.key]} onChange={(e) => { e.stopPropagation(); updatePOStatus(po.id, step.key, e.target.checked); }} style={{ width: '16px', height: '16px', cursor: 'pointer' }} />
+                                  <span style={{ fontWeight: '500', color: po.status[step.key] ? 'rgb(29, 78, 216)' : 'rgb(71, 85, 105)' }}>
+                                    {step.label}
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+
+                            {/* Invoice Tracking */}
+                            <div style={{ marginTop: '12px' }} onClick={(e) => e.stopPropagation()}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                                <label style={{ fontSize: '0.875rem', fontWeight: '500', color: 'rgb(51, 65, 85)' }}>Invoice Tracking</label>
+                                <button onClick={() => addInvoice(po.id)} style={{ padding: '3px 10px', background: 'rgb(37, 99, 235)', color: 'white', border: 'none', borderRadius: '4px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: '500' }}>
+                                  + Add Invoice
+                                </button>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                <div style={{ padding: '6px 12px', background: 'white', borderRadius: '6px', border: '1px solid rgb(229, 231, 235)', minWidth: '120px' }}>
+                                  <div style={{ fontSize: '0.7rem', color: 'rgb(100, 116, 139)' }}>Total Invoiced</div>
+                                  <div style={{ fontSize: '1rem', fontWeight: '600', color: 'rgb(30, 41, 59)' }}>
+                                    ${(po.status.amountInvoiced || 0).toFixed(2)}
+                                  </div>
+                                </div>
+                                <div style={{ padding: '6px 12px', background: 'white', borderRadius: '6px', border: '1px solid rgb(229, 231, 235)', minWidth: '120px' }}>
+                                  <div style={{ fontSize: '0.7rem', color: 'rgb(100, 116, 139)' }}>Remaining</div>
+                                  <div style={{ fontSize: '1rem', fontWeight: '600', color: calculateTotal() - (po.status.amountInvoiced || 0) <= 0 ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)' }}>
+                                    ${(calculateTotal() - (po.status.amountInvoiced || 0)).toFixed(2)}
+                                  </div>
+                                </div>
+                                <div style={{ flex: 1 }}>
+                                  <div style={{ fontSize: '0.7rem', color: 'rgb(100, 116, 139)', marginBottom: '4px' }}>
+                                    Progress: {Math.min(100, ((po.status.amountInvoiced || 0) / calculateTotal() * 100)).toFixed(0)}%
+                                  </div>
+                                  <div style={{ height: '6px', background: 'rgb(226, 232, 240)', borderRadius: '9999px', overflow: 'hidden' }}>
+                                    <div style={{ height: '100%', background: (po.status.amountInvoiced || 0) >= calculateTotal() ? 'linear-gradient(to right, rgb(34, 197, 94), rgb(22, 163, 74))' : 'linear-gradient(to right, rgb(251, 146, 60), rgb(249, 115, 22))', width: Math.min(100, ((po.status.amountInvoiced || 0) / calculateTotal() * 100)) + '%', transition: 'width 0.3s' }} />
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Expanded Details */}
+                          {isExpanded && (
+                            <div style={{ borderTop: '2px solid rgb(229, 231, 235)', padding: '16px', background: 'white' }} className="animate-fade-in">
+                              <h4 style={{ fontWeight: '600', fontSize: '1rem', marginBottom: '12px' }}>Line Items</h4>
+                              <div style={{ background: 'rgb(249, 250, 251)', borderRadius: '6px', overflow: 'hidden', border: '1px solid rgb(229, 231, 235)' }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                  <thead style={{ background: 'rgb(51, 65, 85)', color: 'white' }}>
+                                    <tr>
+                                      <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: '0.875rem' }}>Item</th>
+                                      <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: '0.875rem' }}>Model #</th>
+                                      <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: '0.875rem' }}>Qty</th>
+                                      <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: '0.875rem' }}>Unit Price</th>
+                                      <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: '0.875rem' }}>Total</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {po.lineItems.map((item, idx) => (
+                                      <tr key={idx} style={{ borderBottom: '1px solid rgb(229, 231, 235)' }}>
+                                        <td style={{ padding: '10px 12px', fontSize: '0.875rem' }}>{item.item}</td>
+                                        <td style={{ padding: '10px 12px', fontSize: '0.875rem' }}>{item.modelNumber}</td>
+                                        <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: '0.875rem' }}>{item.quantity}</td>
+                                        <td style={{ padding: '10px 12px', textAlign: 'right', fontSize: '0.875rem' }}>${parseFloat(item.unitPrice).toFixed(2)}</td>
+                                        <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: '600', fontSize: '0.875rem' }}>
+                                          ${((parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0)).toFixed(2)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+
+                              {/* Change Orders */}
+                              {(po.changeOrders || []).length > 0 && (
+                                <div style={{ marginTop: '16px' }}>
+                                  <h4 style={{ fontWeight: '600', fontSize: '1rem', marginBottom: '8px' }}>Change Orders</h4>
+                                  {po.changeOrders.map((co, idx) => (
+                                    <div key={co.id} style={{ background: 'rgb(249, 250, 251)', borderRadius: '6px', marginBottom: '8px', border: '1px solid rgb(229, 231, 235)', overflow: 'hidden' }}>
+                                      <div style={{ padding: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <div style={{ flex: 1 }}>
+                                          <div style={{ fontSize: '0.875rem', fontWeight: '600', marginBottom: '4px' }}>
+                                            CO #{idx + 1}: {co.description}
+                                          </div>
+                                          <div style={{ fontSize: '0.75rem', color: 'rgb(100, 116, 139)' }}>
+                                            {new Date(co.date).toLocaleDateString()} • {co.lineItems ? co.lineItems.length : 0} line item{co.lineItems && co.lineItems.length !== 1 ? 's' : ''}
+                                          </div>
+                                        </div>
+                                        <div style={{ fontSize: '1.125rem', fontWeight: '700', color: co.amount >= 0 ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)', minWidth: '100px', textAlign: 'right' }}>
+                                          {co.amount >= 0 ? '+' : ''}${co.amount.toFixed(2)}
+                                        </div>
+                                      </div>
+                                      
+                                      {co.lineItems && co.lineItems.length > 0 && (
+                                        <div style={{ borderTop: '1px solid rgb(229, 231, 235)', background: 'white', padding: '12px' }}>
+                                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                                            <thead style={{ background: 'rgb(243, 244, 246)' }}>
+                                              <tr>
+                                                <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: '600', color: 'rgb(71, 85, 105)' }}>Item</th>
+                                                <th style={{ padding: '6px 8px', textAlign: 'right', fontWeight: '600', color: 'rgb(71, 85, 105)' }}>Qty</th>
+                                                <th style={{ padding: '6px 8px', textAlign: 'right', fontWeight: '600', color: 'rgb(71, 85, 105)' }}>Unit Price</th>
+                                                <th style={{ padding: '6px 8px', textAlign: 'right', fontWeight: '600', color: 'rgb(71, 85, 105)' }}>Total</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {co.lineItems.map((item, itemIdx) => {
+                                                const lineTotal = (parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0);
+                                                return (
+                                                  <tr key={itemIdx} style={{ borderBottom: '1px solid rgb(243, 244, 246)' }}>
+                                                    <td style={{ padding: '6px 8px' }}>{item.item}</td>
+                                                    <td style={{ padding: '6px 8px', textAlign: 'right' }}>{item.quantity}</td>
+                                                    <td style={{ padding: '6px 8px', textAlign: 'right' }}>${parseFloat(item.unitPrice).toFixed(2)}</td>
+                                                    <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: '600', color: lineTotal >= 0 ? 'rgb(34, 197, 94)' : 'rgb(239, 68, 68)' }}>
+                                                      {lineTotal >= 0 ? '+' : ''}${lineTotal.toFixed(2)}
+                                                    </td>
+                                                  </tr>
+                                                );
+                                              })}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
+                                <button onClick={() => generatePOPDF(po)} style={{ padding: '8px 14px', background: 'rgb(37, 99, 235)', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.875rem' }}>
+                                  <Icon name="Printer" size={16} /> Print PDF
+                                </button>
+                                <button onClick={() => deletePO(po.id)} style={{ padding: '8px 14px', background: 'rgb(220, 38, 38)', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', marginLeft: 'auto', fontSize: '0.875rem' }}>
+                                  <Icon name="Trash2" size={16} /> Delete
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      );
+    };
+
+    // Vendors View - Simplified
+    const VendorsView = ({ vendors, saveVendors }) => {
+      const [showForm, setShowForm] = useState(false);
+      const [editingVendor, setEditingVendor] = useState(null);
+      const [formData, setFormData] = useState({
+        name: '', street: '', city: '', state: '', zip: '',
+        contactName: '', contactPhone: '', contactEmail: '', paymentTerms: ''
+      });
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (editingVendor) {
+          // Update existing vendor
+          saveVendors(vendors.map(v => v.id === editingVendor.id ? { ...formData, id: editingVendor.id } : v));
+        } else {
+          // Add new vendor
+          saveVendors([...vendors, { ...formData, id: Date.now() }]);
+        }
+        setFormData({ name: '', street: '', city: '', state: '', zip: '', contactName: '', contactPhone: '', contactEmail: '', paymentTerms: '' });
+        setShowForm(false);
+        setEditingVendor(null);
+      };
+
+      const handleEdit = (vendor) => {
+        setEditingVendor(vendor);
+        setFormData({
+          name: vendor.name,
+          street: vendor.street,
+          city: vendor.city,
+          state: vendor.state,
+          zip: vendor.zip,
+          contactName: vendor.contactName,
+          contactPhone: vendor.contactPhone,
+          contactEmail: vendor.contactEmail,
+          paymentTerms: vendor.paymentTerms
+        });
+        setShowForm(true);
+      };
+
+      const handleDelete = (vendorId) => {
+        if (confirm('Are you sure you want to delete this vendor?')) {
+          saveVendors(vendors.filter(v => v.id !== vendorId));
+        }
+      };
+
+      const handleCancel = () => {
+        setShowForm(false);
+        setEditingVendor(null);
+        setFormData({ name: '', street: '', city: '', state: '', zip: '', contactName: '', contactPhone: '', contactEmail: '', paymentTerms: '' });
+      };
+
+      return (
+        <div className="animate-slide-in" style={{ padding: '20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '24px' }}>
+            <h2 style={{ fontSize: '1.875rem', fontWeight: 'bold' }}>Vendors</h2>
+            <button onClick={() => setShowForm(!showForm)} style={{ padding: '12px 24px', background: 'rgb(37, 99, 235)', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
+              <Icon name="Plus" size={20} /> Add Vendor
+            </button>
+          </div>
+
+          {showForm && (
+            <form onSubmit={handleSubmit} style={{ background: 'rgb(248, 250, 252)', padding: '24px', borderRadius: '12px', marginBottom: '24px' }}>
+              <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '16px' }}>
+                {editingVendor ? 'Edit Vendor' : 'Add New Vendor'}
+              </h3>
+              <input required type="text" placeholder="Vendor Name" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} style={{ width: '100%', padding: '12px', marginBottom: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              <input required type="text" placeholder="Street" value={formData.street} onChange={(e) => setFormData({ ...formData, street: e.target.value })} style={{ width: '100%', padding: '12px', marginBottom: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+                <input required type="text" placeholder="City" value={formData.city} onChange={(e) => setFormData({ ...formData, city: e.target.value })} style={{ padding: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+                <input required type="text" placeholder="State" value={formData.state} onChange={(e) => setFormData({ ...formData, state: e.target.value })} style={{ padding: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+                <input required type="text" placeholder="ZIP" value={formData.zip} onChange={(e) => setFormData({ ...formData, zip: e.target.value })} style={{ padding: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              </div>
+              <input required type="text" placeholder="Contact Name" value={formData.contactName} onChange={(e) => setFormData({ ...formData, contactName: e.target.value })} style={{ width: '100%', padding: '12px', marginBottom: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              <input required type="tel" placeholder="Phone" value={formData.contactPhone} onChange={(e) => setFormData({ ...formData, contactPhone: e.target.value })} style={{ width: '100%', padding: '12px', marginBottom: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              <input required type="email" placeholder="Email" value={formData.contactEmail} onChange={(e) => setFormData({ ...formData, contactEmail: e.target.value })} style={{ width: '100%', padding: '12px', marginBottom: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              <input required type="text" placeholder="Payment Terms (e.g., Net 30)" value={formData.paymentTerms} onChange={(e) => setFormData({ ...formData, paymentTerms: e.target.value })} style={{ width: '100%', padding: '12px', marginBottom: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button type="submit" style={{ padding: '8px 24px', background: 'rgb(37, 99, 235)', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '500' }}>
+                  {editingVendor ? 'Update Vendor' : 'Add Vendor'}
+                </button>
+                <button type="button" onClick={handleCancel} style={{ padding: '8px 24px', background: 'rgb(203, 213, 225)', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          {vendors.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '48px 0', color: 'rgb(100, 116, 139)' }}>
+              <Icon name="Building2" size={64} />
+              <p style={{ fontSize: '1.125rem', marginTop: '16px' }}>No vendors yet</p>
+            </div>
+          ) : (
+            vendors.map(vendor => (
+              <div key={vendor.id} style={{ background: 'white', border: '2px solid rgb(226, 232, 240)', borderRadius: '12px', padding: '24px', marginBottom: '16px', position: 'relative' }}>
+                <div style={{ position: 'absolute', top: '16px', right: '16px', display: 'flex', gap: '8px' }}>
+                  <button onClick={() => handleEdit(vendor)} style={{ padding: '8px', background: 'rgb(37, 99, 235)', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="Edit Vendor">
+                    <Icon name="Edit" size={16} />
+                  </button>
+                  <button onClick={() => handleDelete(vendor.id)} style={{ padding: '8px', background: 'rgb(220, 38, 38)', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="Delete Vendor">
+                    <Icon name="Trash2" size={16} />
+                  </button>
+                </div>
+                <h3 style={{ fontSize: '1.25rem', fontWeight: 'bold', marginBottom: '8px', paddingRight: '80px' }}>{vendor.name}</h3>
+                <p style={{ color: 'rgb(71, 85, 105)', marginBottom: '4px' }}>{vendor.street}, {vendor.city}, {vendor.state} {vendor.zip}</p>
+                <p style={{ color: 'rgb(71, 85, 105)', marginBottom: '4px' }}>{vendor.contactName} - {vendor.contactPhone} - {vendor.contactEmail}</p>
+                <p style={{ color: 'rgb(71, 85, 105)' }}><strong>Terms:</strong> {vendor.paymentTerms}</p>
+              </div>
+            ))
+          )}
+        </div>
+      );
+    };
+
+    // Projects View - Simplified
+    const ProjectsView = ({ projects, saveProjects }) => {
+      const [showForm, setShowForm] = useState(false);
+      const [editingProject, setEditingProject] = useState(null);
+      const [formData, setFormData] = useState({
+        name: '', street: '', city: '', state: '', zip: '',
+        contactName: '', contactPhone: '', contactEmail: ''
+      });
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (editingProject) {
+          // Update existing project
+          saveProjects(projects.map(p => p.id === editingProject.id ? { ...formData, id: editingProject.id } : p));
+        } else {
+          // Add new project
+          saveProjects([...projects, { ...formData, id: Date.now() }]);
+        }
+        setFormData({ name: '', street: '', city: '', state: '', zip: '', contactName: '', contactPhone: '', contactEmail: '' });
+        setShowForm(false);
+        setEditingProject(null);
+      };
+
+      const handleEdit = (project) => {
+        setEditingProject(project);
+        setFormData({
+          name: project.name,
+          street: project.street,
+          city: project.city,
+          state: project.state,
+          zip: project.zip,
+          contactName: project.contactName,
+          contactPhone: project.contactPhone,
+          contactEmail: project.contactEmail
+        });
+        setShowForm(true);
+      };
+
+      const handleDelete = (projectId) => {
+        if (confirm('Are you sure you want to delete this project?')) {
+          saveProjects(projects.filter(p => p.id !== projectId));
+        }
+      };
+
+      const handleCancel = () => {
+        setShowForm(false);
+        setEditingProject(null);
+        setFormData({ name: '', street: '', city: '', state: '', zip: '', contactName: '', contactPhone: '', contactEmail: '' });
+      };
+
+      return (
+        <div className="animate-slide-in" style={{ padding: '20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '24px' }}>
+            <h2 style={{ fontSize: '1.875rem', fontWeight: 'bold' }}>Projects</h2>
+            <button onClick={() => setShowForm(!showForm)} style={{ padding: '12px 24px', background: 'rgb(37, 99, 235)', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
+              <Icon name="Plus" size={20} /> Add Project
+            </button>
+          </div>
+
+          {showForm && (
+            <form onSubmit={handleSubmit} style={{ background: 'rgb(248, 250, 252)', padding: '24px', borderRadius: '12px', marginBottom: '24px' }}>
+              <h3 style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '16px' }}>
+                {editingProject ? 'Edit Project' : 'Add New Project'}
+              </h3>
+              <input required type="text" placeholder="Project Name" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} style={{ width: '100%', padding: '12px', marginBottom: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              <input required type="text" placeholder="Street" value={formData.street} onChange={(e) => setFormData({ ...formData, street: e.target.value })} style={{ width: '100%', padding: '12px', marginBottom: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+                <input required type="text" placeholder="City" value={formData.city} onChange={(e) => setFormData({ ...formData, city: e.target.value })} style={{ padding: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+                <input required type="text" placeholder="State" value={formData.state} onChange={(e) => setFormData({ ...formData, state: e.target.value })} style={{ padding: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+                <input required type="text" placeholder="ZIP" value={formData.zip} onChange={(e) => setFormData({ ...formData, zip: e.target.value })} style={{ padding: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              </div>
+              <input required type="text" placeholder="Contact Name" value={formData.contactName} onChange={(e) => setFormData({ ...formData, contactName: e.target.value })} style={{ width: '100%', padding: '12px', marginBottom: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              <input required type="tel" placeholder="Phone" value={formData.contactPhone} onChange={(e) => setFormData({ ...formData, contactPhone: e.target.value })} style={{ width: '100%', padding: '12px', marginBottom: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              <input required type="email" placeholder="Email" value={formData.contactEmail} onChange={(e) => setFormData({ ...formData, contactEmail: e.target.value })} style={{ width: '100%', padding: '12px', marginBottom: '12px', border: '1px solid rgb(203, 213, 225)', borderRadius: '8px' }} />
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button type="submit" style={{ padding: '8px 24px', background: 'rgb(37, 99, 235)', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '500' }}>
+                  {editingProject ? 'Update Project' : 'Add Project'}
+                </button>
+                <button type="button" onClick={handleCancel} style={{ padding: '8px 24px', background: 'rgb(203, 213, 225)', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          {projects.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '48px 0', color: 'rgb(100, 116, 139)' }}>
+              <Icon name="MapPin" size={64} />
+              <p style={{ fontSize: '1.125rem', marginTop: '16px' }}>No projects yet</p>
+            </div>
+          ) : (
+            projects.map(project => (
+              <div key={project.id} style={{ background: 'white', border: '2px solid rgb(226, 232, 240)', borderRadius: '12px', padding: '24px', marginBottom: '16px', position: 'relative' }}>
+                <div style={{ position: 'absolute', top: '16px', right: '16px', display: 'flex', gap: '8px' }}>
+                  <button onClick={() => handleEdit(project)} style={{ padding: '8px', background: 'rgb(37, 99, 235)', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="Edit Project">
+                    <Icon name="Edit" size={16} />
+                  </button>
+                  <button onClick={() => handleDelete(project.id)} style={{ padding: '8px', background: 'rgb(220, 38, 38)', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }} title="Delete Project">
+                    <Icon name="Trash2" size={16} />
+                  </button>
+                </div>
+                <h3 style={{ fontSize: '1.25rem', fontWeight: 'bold', marginBottom: '8px', paddingRight: '80px' }}>{project.name}</h3>
+                <p style={{ color: 'rgb(71, 85, 105)', marginBottom: '4px' }}>{project.street}, {project.city}, {project.state} {project.zip}</p>
+                <p style={{ color: 'rgb(71, 85, 105)' }}>{project.contactName} - {project.contactPhone} - {project.contactEmail}</p>
+              </div>
+            ))
+          )}
+        </div>
+      );
+    };
+
+    // Initialize and Render
+    lucide.createIcons();
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<POGenerator />);
+  </script>
+</body>
+</html>
